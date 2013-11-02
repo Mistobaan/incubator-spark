@@ -92,6 +92,11 @@ def parse_args():
   parser.add_option("--spot-price", metavar="PRICE", type="float",
       help="If specified, launch slaves as spot instances with the given " +
             "maximum price (in dollars)")
+  parser.add_option("--placement-group", action="store", default=None,
+      help="Create the nodes inside the given placement group. If no name is provided "+
+      "a new placement group will be created." +
+      "Note that only cluster computing instances can be placed in a placement group." +
+      "All the nodes of the placement group MUST be of the same type (master node included)")
   parser.add_option("--ganglia", action="store_true", default=True,
       help="Setup Ganglia monitoring on cluster (default: on). NOTE: " +
            "the Ganglia page will be publicly accessible")
@@ -202,6 +207,36 @@ def get_spark_ami(opts):
 
   return ami
 
+def get_placement_group_or_none(conn, name):
+  try:
+      return conn.get_all_placement_groups(filters={'group-name': name})[0]
+  except boto.exception.EC2ResponseError as e:
+      if e.error_code == "InvalidPlacementGroup.Unknown":
+          return None
+      raise
+  except IndexError:
+      return None
+
+def get_or_create_placement_group(conn, name):
+    pg = get_placement_group_or_none(conn, name)
+    if pg == None:
+      return create_placement_group(conn, name)
+    return pg
+
+def create_placement_group(conn, name):
+  print "Creating placement group %s" % name
+  success = conn.create_placement_group(name)
+  if not success:
+    print >>stderr, "failed to create placement group '%s' (error = %s)" % (name, success)
+    sys.exit(1)
+
+  pg = get_placement_group_or_none(conn, name)
+  while not pg:
+      print "Waiting for placement group %s..." % name
+      time.sleep(3)
+      pg = get_placement_group_or_none(conn, name)
+  return pg
+
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
 # Returns a tuple of EC2 reservation objects for the master and slaves
@@ -210,6 +245,11 @@ def launch_cluster(conn, opts, cluster_name):
   print "Setting up security groups..."
   master_group = get_or_make_group(conn, cluster_name + "-master")
   slave_group = get_or_make_group(conn, cluster_name + "-slaves")
+
+  if opts.placement_group != None:
+    get_or_create_placement_group(conn, opts.placement_group)
+    print ("Using placement group %s" % opts.placement_group)
+
   if master_group.rules == []: # Group was just now created
     master_group.authorize(src_group=master_group)
     master_group.authorize(src_group=slave_group)
@@ -274,6 +314,7 @@ def launch_cluster(conn, opts, cluster_name):
           image_id = opts.ami,
           launch_group = "launch-group-%s" % cluster_name,
           placement = zone,
+          placement_group = opts.placement_group,
           count = num_slaves_this_zone,
           key_name = opts.key_pair,
           security_groups = [slave_group],
@@ -327,6 +368,7 @@ def launch_cluster(conn, opts, cluster_name):
                               security_groups = [slave_group],
                               instance_type = opts.instance_type,
                               placement = zone,
+                              placement_group = opts.placement_group,
                               min_count = num_slaves_this_zone,
                               max_count = num_slaves_this_zone,
                               block_device_map = block_map)
@@ -345,6 +387,7 @@ def launch_cluster(conn, opts, cluster_name):
                          security_groups = [master_group],
                          instance_type = master_type,
                          placement = opts.zone,
+                         placement_group = opts.placement_group,
                          min_count = 1,
                          max_count = 1,
                          block_device_map = block_map)
@@ -640,6 +683,10 @@ def real_main():
   except Exception as e:
     print >> stderr, (e)
     sys.exit(1)
+
+  if opts.placement_group != None:
+    if opts.placement_group == "":
+      opts.placement_group = cluster_name + "_pg"
 
   # Select an AZ at random if it was not specified.
   if opts.zone == "":
