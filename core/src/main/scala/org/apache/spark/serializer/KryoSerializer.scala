@@ -95,7 +95,7 @@ class KryoSerializationStream(kryo: Kryo, outStream: OutputStream) extends Seria
 }
 
 private[spark]
-class KryoDeserializationStream(kryo: Kryo, inStream: InputStream) extends DeserializationStream {
+class KryoDeserializationStream(kryo: Kryo, inStream: InputStream) extends DeserializationStream with Logging {
   val input = new KryoInput(inStream)
 
   def readObject[T](): T = {
@@ -103,7 +103,10 @@ class KryoDeserializationStream(kryo: Kryo, inStream: InputStream) extends Deser
       kryo.readClassAndObject(input).asInstanceOf[T]
     } catch {
       // DeserializationStream uses the EOF exception to indicate stopping condition.
-      case _: KryoException => throw new EOFException
+      case e: KryoException => {
+        logError("Kyro: Could not deserialize object ", e)
+        throw new EOFException
+      }
     }
   }
 
