@@ -938,9 +938,8 @@ abstract class RDD[T: ClassTag](
       val queue = new BoundedPriorityQueue[T](num)
       queue ++= items
       Iterator.single(queue)
-    }.reduce { (queue1, queue2) =>
+    }.fold(new BoundedPriorityQueue[T](num) ) { (queue1, queue2) =>
       queue1 ++= queue2
-      queue1
     }.toArray.sorted(ord.reverse)
   }
 
